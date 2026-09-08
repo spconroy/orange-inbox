@@ -4,7 +4,7 @@
 # Creates (or finds) the D1 database, R2 buckets, and KV namespace this app
 # needs, patches the binding IDs into wrangler.jsonc, applies migrations, and
 # deploys both Workers. Re-runnable: every step looks up existing resources
-# before creating, and only patches REPLACE_WITH_* placeholders.
+# before creating, and synchronizes the managed D1 and KV binding IDs.
 #
 # Usage:  ./scripts/setup.sh [--help]
 # Env:    CLOUDFLARE_ACCOUNT_ID  Required if your wrangler login has access to
@@ -142,17 +142,36 @@ fi
 
 # ─── patch wrangler.jsonc ───────────────────────────────────────────────────
 log "Patching binding IDs into wrangler.jsonc"
-patch() {
-  local file=$1 placeholder=$2 value=$3
-  if grep -q "$placeholder" "$file"; then
-    sed -i.bak "s/$placeholder/$value/g" "$file"
-    rm -f "$file.bak"
-    ok "  $file ← $placeholder"
-  fi
+# Update existing IDs as well as placeholders, scoped to the managed binding.
+node - "$ROOT" "$D1_ID" "$KV_ID" <<'NODE'
+const fs = require('node:fs');
+const [root, d1, kv] = process.argv.slice(2);
+if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(d1) ||
+    !/^[0-9a-f]{32}$/.test(kv)) {
+  throw new Error('Invalid resource IDs returned by Wrangler');
 }
-patch "$ROOT/web/wrangler.jsonc"          "REPLACE_WITH_D1_ID" "$D1_ID"
-patch "$ROOT/web/wrangler.jsonc"          "REPLACE_WITH_KV_ID" "$KV_ID"
-patch "$ROOT/email-worker/wrangler.jsonc" "REPLACE_WITH_D1_ID" "$D1_ID"
+const updates = [
+  ['web/wrangler.jsonc', [['DB', 'database_id', d1], ['DRAFTS', 'id', kv]]],
+  ['email-worker/wrangler.jsonc', [['DB', 'database_id', d1]]],
+].map(([file, bindings]) => {
+  const path = `${root}/${file}`;
+  let text = fs.readFileSync(path, 'utf8');
+  for (const [binding, key, value] of bindings) {
+    let count = 0;
+    text = text.replace(/\{[^{}]*\}/g, object => {
+      if (!new RegExp(`"binding"\\s*:\\s*"${binding}"`).test(object)) return object;
+      const field = new RegExp(`("${key}"\\s*:\\s*")[^"]*(")`, 'g');
+      return object.replace(field, (_, prefix, suffix) => {
+        count++;
+        return prefix + value + suffix;
+      });
+    });
+    if (count !== 1) throw new Error(`Expected one ${binding}.${key} in ${file}, found ${count}`);
+  }
+  return [path, text];
+});
+for (const [path, text] of updates) fs.writeFileSync(path, text);
+NODE
 
 # ─── migrations ────────────────────────────────────────────────────────────
 log "Applying D1 migrations to remote database"
@@ -160,15 +179,18 @@ wr d1 migrations apply orange-inbox --remote
 ok "Migrations applied"
 
 # ─── deploy ─────────────────────────────────────────────────────────────────
-# Capture deploy output so we can pull the public URLs out of it for the
-# post-deploy health check below.
-log "Deploying email-worker"
-EMAIL_DEPLOY=$(cd "$ROOT/email-worker" && npx --yes wrangler deploy 2>&1)
-printf '%s\n' "$EMAIL_DEPLOY" | tail -10
+# Stream output and retain web output for the URL health check. With pipefail,
+# a failed deployment exits with its error visible instead of hiding it in a variable.
+DEPLOY_LOG=$(mktemp)
+trap 'rm -f "$DEPLOY_LOG"' EXIT
 
+# The email Worker's WEB service binding requires the web Worker to exist first.
 log "Deploying web (Next.js build via OpenNext — takes a couple minutes)"
-WEB_DEPLOY=$(cd "$ROOT/web" && npm run deploy 2>&1)
-printf '%s\n' "$WEB_DEPLOY" | tail -10
+(cd "$ROOT/web" && npm run deploy) 2>&1 | tee "$DEPLOY_LOG"
+WEB_DEPLOY=$(cat "$DEPLOY_LOG")
+
+log "Deploying email-worker"
+(cd "$ROOT/email-worker" && npx --yes wrangler deploy) 2>&1 | tee "$DEPLOY_LOG"
 
 # Wrangler prints the deployed URL on a line like:
 #   "https://orange-inbox-web.<subdomain>.workers.dev"
@@ -257,11 +279,18 @@ Two manual steps to make it usable:
    (e.g. "Emails ending with @yourdomain.com"). Without Access in
    front, the app shows "Sign in required".
 
+   Sign into the app once to create your user, then grant your account
+   admin access. In Cloudflare → D1 → orange-inbox → Console, run:
+     UPDATE users SET is_admin = 1 WHERE email = 'your-login-email';
+   Replace your-login-email with your sign-in email in lowercase, then
+   refresh the app. New users are not admins by default.
+
 2. Email Routing (mail flow):
    In the Cloudflare dashboard, enable Email Routing for any domain
    you want to receive mail on, and add a rule sending mail to the
-   orange-inbox-email Worker. Then sign into the app and add the
-   same domain through the sidebar's "+ Add mail domain" button.
+   orange-inbox-email Worker. Then sign into the app as an admin and add
+   the same domain in Settings → Mail domains → Add domain
+   (/inbox/settings#mail-domains).
 
 For local development:
    echo 'DEV_USER_EMAIL=you@yourdomain.com' > web/.dev.vars
