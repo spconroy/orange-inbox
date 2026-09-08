@@ -237,7 +237,17 @@ For each domain whose mail you want orange-inbox to handle:
      Destination: `orange-inbox-email` → Save and **enable** the catch-all,
      or
    - Add per-address rules with the same Worker destination.
-4. Open the deployed app, sidebar **+ Add mail domain**, enter the same
+4. Sign into the deployed app once to create your user. New users are not
+   admins by default. In **Cloudflare → D1 → orange-inbox → Console**, run
+   the following, replacing `your-login-email` with your sign-in email in
+   lowercase:
+
+   ```sql
+   UPDATE users SET is_admin = 1 WHERE email = 'your-login-email';
+   ```
+
+   Refresh the app, open **Settings → Mail domains**
+   (`/inbox/settings#mail-domains`), and use **Add domain** to enter the same
    domain name. The app creates the `domains` row, a default catch-all
    `mailbox`, and grants you `admin` role on it.
 

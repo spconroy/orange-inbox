@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 
 const nextConfig: NextConfig = {
   experimental: {
@@ -21,7 +22,11 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
-
-import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
-initOpenNextCloudflareForDev();
+export default async function config(phase: string): Promise<NextConfig> {
+  // Only next dev needs the local Workers runtime and its persisted SQLite state.
+  if (phase === PHASE_DEVELOPMENT_SERVER) {
+    const { initOpenNextCloudflareForDev } = await import("@opennextjs/cloudflare");
+    await initOpenNextCloudflareForDev();
+  }
+  return nextConfig;
+}
