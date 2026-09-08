@@ -26,6 +26,7 @@
     "@lexical/utils": "^0.42.0",
     "@opennextjs/cloudflare": "^1.19.8",
     "aws4fetch": "^1.0.20",
+    "jose": "^6.2.3",
     "lexical": "^0.42.0",
     "mimetext": "^3.0.28",
     "next": "16.2.6",

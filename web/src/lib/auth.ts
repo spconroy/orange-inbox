@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { getDb } from "./db";
+import { getAccessConfig, verifyAccessEmail } from "./cf-access";
 
 export interface User {
   id: string;
@@ -24,9 +25,9 @@ interface UserRow {
 
 const ACCESS_EMAIL_HEADER = "cf-access-authenticated-user-email";
 
-// Resolve the current user from the Cloudflare Access JWT/header set by
-// Access in front of the host Worker. In `next dev` (no Access in the loop),
-// fall back to DEV_USER_EMAIL so local development is usable.
+// Resolve the current user from the Cloudflare Access JWT verified against
+// Cloudflare's JWKS. In `next dev` (no Access in the loop), fall back to
+// DEV_USER_EMAIL so local development is usable.
 export async function getCurrentUser(): Promise<User | null> {
   const email = await resolveEmail();
   if (!email) return null;
@@ -97,13 +98,46 @@ function rowToUser(row: UserRow): User {
   };
 }
 
+// Resolve the authenticated user's email. The signed Cloudflare Access JWT is
+// the source of truth — the plaintext `cf-access-authenticated-user-email`
+// header is spoofable (the Worker is reachable at URLs Access does not front)
+// and is only used here as a defense-in-depth cross-check, never as the
+// authority. Fails closed: any path that can't establish a verified identity
+// returns null.
 async function resolveEmail(): Promise<string | null> {
   const h = await headers();
-  const fromAccess = h.get(ACCESS_EMAIL_HEADER);
-  if (fromAccess) return fromAccess.trim().toLowerCase();
+  const config = getAccessConfig();
 
+  if (config) {
+    // Access is configured: require a valid, verified JWT. Do NOT fall back
+    // to the plaintext header.
+    const verified = await verifyAccessEmail(h, config);
+    if (!verified) return null;
+
+    // Defense-in-depth: if the plaintext header is present it must agree with
+    // the verified claim. A mismatch indicates tampering — reject.
+    const headerEmail = h.get(ACCESS_EMAIL_HEADER)?.trim().toLowerCase();
+    if (headerEmail && headerEmail !== verified) {
+      console.error(
+        "CF Access: header email does not match verified JWT email",
+      );
+      return null;
+    }
+    return verified;
+  }
+
+  // No Access config. Local development convenience only.
   if (process.env.NODE_ENV === "development" && process.env.DEV_USER_EMAIL) {
     return process.env.DEV_USER_EMAIL.trim().toLowerCase();
   }
+
+  // Not configured and not development: fail closed. Never trust the
+  // plaintext header on its own.
+  console.error(
+    "CF Access verification is unconfigured (CF_ACCESS_TEAM_DOMAIN / " +
+      "CF_ACCESS_AUD missing). Refusing to authenticate from the spoofable " +
+      "cf-access-authenticated-user-email header. Set these vars in " +
+      "wrangler.jsonc to enable authentication.",
+  );
   return null;
 }

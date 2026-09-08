@@ -3,6 +3,14 @@
   "name": "orange-inbox-web",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-05-08",
+
+  // SECURITY: do NOT serve this Worker at its default *.workers.dev URL.
+  // Cloudflare Access only fronts the custom domain; the workers.dev URL is
+  // unprotected, so anyone could reach the app there and spoof the
+  // cf-access-authenticated-user-email header. The Worker must be served
+  // ONLY via the Access-protected custom domain (configure it as a route /
+  // custom domain in the Cloudflare dashboard).
+  "workers_dev": false,
   "compatibility_flags": [
     "nodejs_compat",
     "global_fetch_strictly_public"
@@ -68,7 +76,21 @@
   // `wrangler secret put VAPID_PRIVATE_KEY`. setup.sh handles bootstrap.
   "vars": {
     "VAPID_PUBLIC_KEY": "BH8smumQaKTZZh9luj79lTPSVZEfCJbPW6smaIGieSbzYmHxDzEQyZ-wkMhsoOyLJqi6bxfHZTN8fl0YeezpdxE",
-    "VAPID_SUBJECT": "mailto:admin@example.com"
+    "VAPID_SUBJECT": "mailto:admin@example.com",
+
+    // Cloudflare Access JWT verification. NOT secrets — safe to ship in vars.
+    // The operator MUST fill both in before deploying, or the app fails closed
+    // (every request resolves to unauthenticated).
+    //   CF_ACCESS_TEAM_DOMAIN: your Zero Trust team domain. Either the bare
+    //     team name (e.g. "acme") or the full URL
+    //     "https://acme.cloudflareaccess.com". Found in the Cloudflare Zero
+    //     Trust dashboard under Settings > Custom Pages / team domain.
+    //   CF_ACCESS_AUD: the Application Audience (AUD) tag of the Access
+    //     application that protects this Worker's custom domain. Found in the
+    //     Cloudflare Zero Trust dashboard under Access > Applications >
+    //     (your app) > Overview.
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "CF_ACCESS_AUD": ""
   }
 
   // INTERNAL_SECRET and VAPID_PRIVATE_KEY are provisioned as Worker secrets
